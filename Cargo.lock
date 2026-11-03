@@ -339,8 +339,13 @@ dependencies = [
 name = "containerregistry-layout"
 version = "0.1.2"
 dependencies = [
+ "async-trait",
  "containerregistry-image",
  "containerregistry-registry",
+ "containerregistry-server",
+ "containerregistry-v1",
+ "futures",
+ "rand",
  "serde",
  "serde_json",
  "tempfile",

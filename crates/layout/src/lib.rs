@@ -29,10 +29,12 @@
 mod error;
 mod layout;
 mod oci_layout;
+mod v1;
 
 pub use error::Error;
 pub use layout::Layout;
 pub use oci_layout::OciLayout;
+pub use v1::AppendOptions;
 
 /// Result type for layout operations.
 pub type Result<T> = std::result::Result<T, Error>;

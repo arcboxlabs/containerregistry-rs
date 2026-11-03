@@ -12,10 +12,15 @@ containerregistry-image.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true
+containerregistry-v1.workspace = true
+tokio.workspace = true
+async-trait.workspace = true
+futures.workspace = true
+rand.workspace = true
 
 [dev-dependencies]
 tempfile.workspace = true
 # Path-only (no version) so it is stripped from the published manifest, avoiding
 # the layout <-> registry circular dev-dep at publish time.
 containerregistry-registry = { path = "../registry" }
-tokio.workspace = true
+containerregistry-server = { path = "../server" }
