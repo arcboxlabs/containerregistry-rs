@@ -197,11 +197,11 @@ async fn test_crane_commands_golden() {
     let (_got, copied_digest) = client.get_manifest(&reference_copy).await.unwrap();
     assert_eq!(copied_digest, manifest_digest);
 
-    // catalog (expected error)
+    // catalog
     let output = run_crane(&["--insecure", "catalog", &addr]);
-    assert!(!output.status.success());
-    let stderr = String::from_utf8_lossy(&output.stderr);
-    assert!(stderr.contains("catalog not yet implemented"));
+    assert!(output.status.success());
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.lines().any(|line| line.trim() == repo));
 
     // Cleanup temp dirs (best effort)
     let _ = fs::remove_dir_all(layout_dir.path());

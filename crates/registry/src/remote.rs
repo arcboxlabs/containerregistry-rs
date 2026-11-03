@@ -721,6 +721,26 @@ pub async fn write_layer(
         .await
 }
 
+/// Uploads an image and its manifest by digest to the repository of
+/// `repo` and returns the manifest digest. Unlike [`write`], this works for
+/// images whose digest is unknown until their streamed layers are
+/// uploaded (e.g. a flattened image).
+pub async fn write_by_digest(
+    client: &Client,
+    repo: &Reference,
+    img: Arc<dyn Image>,
+    options: &Options,
+) -> V1Result<Digest> {
+    let w = Writer::new(client, options);
+    w.write_image(repo, img.clone()).await?;
+    let raw = img.raw_manifest().await?;
+    let digest = Digest::sha256(&raw);
+    let mt = img.media_type().await?;
+    w.put(&repo.clone().with_new_digest(digest.clone()), &raw, &mt)
+        .await?;
+    Ok(digest)
+}
+
 /// Uploads only the manifest of `t`; its blobs must already exist
 /// (go `remote.Put`).
 pub async fn put(client: &Client, reference: &Reference, t: &Taggable) -> V1Result<()> {

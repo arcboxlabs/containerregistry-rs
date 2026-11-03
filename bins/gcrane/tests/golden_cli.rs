@@ -115,8 +115,12 @@ async fn test_gcrane_cp_ls_gc_golden() {
     let output = run_gcrane(&["--insecure", "ls", &format!("{addr}/{repo}")]);
     assert!(output.status.success());
     let stdout = String::from_utf8_lossy(&output.stdout);
-    assert!(stdout.lines().any(|line| line.trim() == tag));
+    // Like go's gcrane, plain registries list as `repo:tag`.
+    let want = format!("{addr}/{repo}:{tag}");
+    assert!(stdout.lines().any(|line| line.trim() == want), "{}", stdout);
 
+    // Every manifest here is tagged, so gc reports nothing.
     let output = run_gcrane(&["--insecure", "gc", &format!("{addr}/{repo}")]);
-    assert!(!output.status.success());
+    assert!(output.status.success());
+    assert!(output.stdout.is_empty());
 }

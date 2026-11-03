@@ -392,6 +392,29 @@ impl Client {
         result
     }
 
+    /// The `Authorization` header value the client sends for `reference`
+    /// with pull (or, with `push`, pull and push) scope plus pull scope on
+    /// each repository in `mounts`. The registry's challenge is learned
+    /// first; `None` means anonymous access (go `crane auth token`).
+    pub async fn authorization_header(
+        &self,
+        reference: &Reference,
+        push: bool,
+        mounts: &[String],
+    ) -> Result<Option<String>> {
+        // Pinging records the registry's challenge; a 401 here is expected.
+        let _ = self.ping(reference.registry()).await;
+        let mut target = if push {
+            Target::push(reference)
+        } else {
+            Target::pull(reference)
+        };
+        for m in mounts {
+            target = target.with_scope(pull_scope(m));
+        }
+        self.authorization(&target).await
+    }
+
     // ------------------------------------------------------------------
     // Request pipeline
     // ------------------------------------------------------------------

@@ -590,6 +590,174 @@ pub async fn write_to_file(
     Ok(())
 }
 
+// ---------------------------------------------------------------------------
+// Legacy (v1) docker save tarballs (go-containerregistry `pkg/legacy/tarball`)
+
+fn v1_layer_id(digest_hex: &str, parent: &str, raw_config: Option<&[u8]>) -> String {
+    let mut s = format!("{} {}", digest_hex, parent);
+    if let Some(c) = raw_config.filter(|c| !c.is_empty()) {
+        s.push(' ');
+        s.push_str(&String::from_utf8_lossy(c));
+    }
+    Digest::sha256(s.as_bytes()).hex().to_string()
+}
+
+fn split_tag(name: &str) -> (String, String) {
+    match name.rsplit_once(':') {
+        Some((base, tag)) if !tag.contains('/') => (base.to_string(), tag.to_string()),
+        _ => (name.to_string(), String::new()),
+    }
+}
+
+struct LegacyEntry {
+    id: String,
+    json: Vec<u8>,
+    layer: Arc<dyn Layer>,
+    size: u64,
+}
+
+/// Streams a legacy `docker save` tarball (per-layer `<id>/layer.tar`,
+/// `<id>/json` and `<id>/VERSION`, plus `manifest.json` and
+/// `repositories`) for `images` (`legacy/tarball.MultiWrite`).
+pub async fn write_legacy(images: Vec<(Vec<String>, Arc<dyn Image>)>) -> Result<BoxReader> {
+    use serde_json::{Map, Value, json};
+    let mut manifest: TarManifest = Vec::new();
+    let mut repos: BTreeMap<String, BTreeMap<String, String>> = BTreeMap::new();
+    let mut configs: Vec<(String, Vec<u8>)> = Vec::new();
+    let mut entries: Vec<LegacyEntry> = Vec::new();
+    let mut seen = HashSet::new();
+    for (tags, img) in &images {
+        let cfg_name = format!("{}.json", img.config_name().await?.hex());
+        let raw_cfg = img.raw_config_file().await?;
+        let cfg = img.config_file().await?;
+        let layers = img.layers().await?;
+        let mut history: Vec<_> = cfg
+            .history
+            .iter()
+            .filter(|h| !h.empty_layer)
+            .cloned()
+            .collect();
+        if history.is_empty() {
+            history = vec![Default::default(); layers.len()];
+        } else if history.len() != layers.len() {
+            return Err(Error::Invalid(format!(
+                "image config had layer history which did not match the number of layers, got len(history)={}, len(layers)={}",
+                history.len(),
+                layers.len()
+            )));
+        }
+        let mut files = Vec::with_capacity(layers.len());
+        let mut parent = String::new();
+        for (i, l) in layers.iter().enumerate() {
+            let hex = l.digest().await?.hex().to_string();
+            let top = i + 1 == layers.len();
+            let id = v1_layer_id(&hex, &parent, top.then_some(raw_cfg.as_slice()));
+            let h = &history[i];
+            let mut obj = Map::new();
+            if let Some(c) = &h.created {
+                obj.insert("created".into(), json!(c));
+            }
+            if let Some(a) = &h.author {
+                obj.insert("author".into(), json!(a));
+            }
+            obj.insert(
+                "container_config".into(),
+                json!({ "Cmd": [h.created_by.clone().unwrap_or_default()] }),
+            );
+            obj.insert("id".into(), json!(id));
+            if !parent.is_empty() {
+                obj.insert("parent".into(), json!(parent));
+            }
+            if h.empty_layer {
+                obj.insert("throwaway".into(), json!(true));
+            }
+            if let Some(c) = &h.comment {
+                obj.insert("comment".into(), json!(c));
+            }
+            if top {
+                obj.insert("architecture".into(), json!(cfg.architecture));
+                obj.insert("os".into(), json!(cfg.os));
+                if let Some(c) = &cfg.container {
+                    obj.insert("container".into(), json!(c));
+                }
+                if let Some(v) = &cfg.docker_version {
+                    obj.insert("docker_version".into(), json!(v));
+                }
+                if let Some(c) = &cfg.config {
+                    obj.insert("config".into(), serde_json::to_value(c)?);
+                }
+                if let Some(c) = &cfg.created {
+                    obj.insert("created".into(), json!(c));
+                }
+            }
+            files.push(format!("{}/layer.tar", id));
+            if seen.insert(id.clone()) {
+                entries.push(legacy_entry(id.clone(), Value::Object(obj), l.clone()).await?);
+            }
+            parent = id;
+        }
+        for t in tags {
+            let (base, tag) = split_tag(t);
+            repos.entry(base).or_default().insert(tag, parent.clone());
+        }
+        manifest.push(TarDescriptor {
+            config: cfg_name.clone(),
+            repo_tags: tags.clone(),
+            layers: files,
+            layer_sources: BTreeMap::new(),
+        });
+        configs.push((cfg_name, raw_cfg));
+    }
+    let manifest = serde_json::to_vec(&manifest)?;
+    let repos = serde_json::to_vec(&repos)?;
+    let handle = Handle::current();
+    Ok(blocking_pipe(move |w| {
+        let err = |e: Error| io::Error::other(e.to_string());
+        let mut b = tar::Builder::new(&mut *w);
+        for (name, cfg) in &configs {
+            write_file(&mut b, name, cfg.len() as u64, cfg.as_slice())?;
+        }
+        for e in &entries {
+            let r = handle.block_on(e.layer.uncompressed()).map_err(err)?;
+            write_file(
+                &mut b,
+                &format!("{}/layer.tar", e.id),
+                e.size,
+                tarutil::sync_reader(r, handle.clone()),
+            )?;
+            write_file(
+                &mut b,
+                &format!("{}/json", e.id),
+                e.json.len() as u64,
+                e.json.as_slice(),
+            )?;
+            write_file(&mut b, &format!("{}/VERSION", e.id), 3, &b"1.0"[..])?;
+        }
+        write_file(
+            &mut b,
+            "manifest.json",
+            manifest.len() as u64,
+            manifest.as_slice(),
+        )?;
+        write_file(&mut b, "repositories", repos.len() as u64, repos.as_slice())?;
+        b.finish()
+    }))
+}
+
+async fn legacy_entry(
+    id: String,
+    json: serde_json::Value,
+    layer: Arc<dyn Layer>,
+) -> Result<LegacyEntry> {
+    let size = crate::partial::uncompressed_size(layer.as_ref()).await?;
+    Ok(LegacyEntry {
+        id,
+        json: serde_json::to_vec(&json)?,
+        layer,
+        size,
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

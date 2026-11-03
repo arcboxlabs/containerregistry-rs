@@ -1,372 +1,339 @@
-//! gcrane CLI - A tool for GCR-specific container registry operations.
+//! gcrane CLI - crane with GCR / Artifact Registry extensions
+//! (a port of go-containerregistry's `gcrane`).
 //!
-//! gcrane provides GCR-optimized commands, including recursive repository
-//! copying and cross-repository blob mounting.
+//! `copy`, `ls` and `gc` understand Google's extended tag listing
+//! (child repositories and untagged manifests) and can recurse through a
+//! repository tree; every other command is crane's.
 
+use std::collections::BTreeMap;
+use std::ffi::OsString;
 use std::io;
+use std::sync::Arc;
 
 use anyhow::{Context, Result};
-use clap::Parser;
+use clap::{Parser, Subcommand};
+use futures::{StreamExt, TryStreamExt};
 
-use containerregistry_image::{ImageIndex, Manifest, Platform};
-use containerregistry_registry::{Client, ClientConfig, ManifestOrIndex, Reference};
+use containerregistry_registry::remote::{self, Options};
+use containerregistry_registry::{Client, ClientConfig, GoogleTags, Reference};
 
 #[derive(Parser)]
 #[command(name = "gcrane")]
-#[command(about = "A tool for GCR-specific container registry operations")]
+#[command(
+    about = "gcrane is a tool for managing container images, specifically for GCR; \
+all crane commands are also available"
+)]
 #[command(version)]
 struct Cli {
-    /// Allow insecure connections to registries
+    /// Allow image references to be fetched without TLS
     #[arg(long, global = true)]
     insecure: bool,
 
-    /// Platform to use for multi-arch images (e.g., linux/amd64)
-    #[arg(long, global = true)]
-    platform: Option<String>,
+    /// Enable debug logs
+    #[arg(short, long, global = true)]
+    verbose: bool,
 
     #[command(subcommand)]
     command: Commands,
 }
 
-#[derive(clap::Subcommand)]
+#[derive(Subcommand)]
 enum Commands {
-    /// Copy images with GCR optimizations
-    Cp {
-        /// Source image or repository reference
+    /// Efficiently copy a remote image from src to dst
+    #[command(alias = "cp")]
+    Copy {
+        /// Source image or repository
         source: String,
-        /// Destination image or repository reference
+        /// Destination image or repository
         destination: String,
-        /// Copy all tags recursively (repository mode)
+        /// Whether to recurse through repos
         #[arg(short, long)]
         recursive: bool,
-        /// Number of concurrent copy operations
-        #[arg(short = 'j', long, default_value = "4")]
+        /// The maximum number of concurrent copies
+        #[arg(short = 'j', long, default_value_t = default_jobs())]
         jobs: usize,
     },
-    /// List all tags in a repository
+    /// List the contents of a repo
     Ls {
-        /// Repository reference
+        /// Repository
         repository: String,
+        /// Whether to recurse through repos
+        #[arg(short, long)]
+        recursive: bool,
+        /// Format the response from the registry as JSON, one line per repo
+        #[arg(long)]
+        json: bool,
     },
-    /// Garbage collect unreferenced blobs (not yet implemented)
+    /// List images that are not tagged
     Gc {
-        /// Repository reference
+        /// Repository
         repository: String,
+        /// Whether to recurse through repos
+        #[arg(short, long)]
+        recursive: bool,
     },
 }
 
+/// Whether the subcommand (the first positional argument) is a crane
+/// command rather than one gcrane overrides.
+fn delegates_to_crane(args: &[OsString]) -> bool {
+    let mut it = args.iter().skip(1).map(|a| a.to_string_lossy());
+    while let Some(a) = it.next() {
+        if a == "--platform" {
+            it.next();
+            continue;
+        }
+        if a.starts_with('-') {
+            continue;
+        }
+        return !matches!(a.as_ref(), "copy" | "cp" | "ls" | "gc" | "help");
+    }
+    false
+}
+
+fn default_jobs() -> usize {
+    std::thread::available_parallelism()
+        .map(|n| n.get())
+        .unwrap_or(4)
+}
+
 #[tokio::main]
-async fn main() -> Result<()> {
+async fn main() {
+    let args: Vec<OsString> = std::env::args_os().collect();
+    // Hand crane commands the original arguments, global flags included.
+    if delegates_to_crane(&args) {
+        containerregistry_crane::main_with_args(args).await;
+        return;
+    }
+    let cli = Cli::parse_from(&args);
+    let level = if cli.verbose {
+        tracing::Level::DEBUG
+    } else {
+        tracing::Level::WARN
+    };
     tracing_subscriber::fmt()
         .with_env_filter(
-            tracing_subscriber::EnvFilter::from_default_env()
-                .add_directive(tracing::Level::WARN.into()),
+            tracing_subscriber::EnvFilter::from_default_env().add_directive(level.into()),
         )
         .with_writer(io::stderr)
         .init();
+    if let Err(e) = run(cli).await {
+        eprintln!("Error: {:#}", e);
+        std::process::exit(1);
+    }
+}
 
-    let cli = Cli::parse();
-
-    // Create client with configuration
+async fn run(cli: Cli) -> Result<()> {
     let config = ClientConfig::new()
         .with_https(!cli.insecure)
-        .with_insecure(cli.insecure);
-    let client = Client::with_config(config)?;
-
-    // Parse platform if specified
-    let platform = cli
-        .platform
-        .as_ref()
-        .map(|p| parse_platform(p))
-        .transpose()?;
-
+        .with_insecure(cli.insecure)
+        .with_user_agent(format!("gcrane/{}", env!("CARGO_PKG_VERSION")));
+    let client =
+        Client::with_keychain(config, Arc::new(containerregistry_auth::default_keychain()))?;
     match cli.command {
-        Commands::Cp {
+        Commands::Copy {
             source,
             destination,
             recursive,
             jobs,
-        } => {
-            cmd_cp(
-                &client,
-                &source,
-                &destination,
-                recursive,
-                jobs,
-                platform.as_ref(),
-            )
-            .await
-        }
-        Commands::Ls { repository } => cmd_ls(&client, &repository).await,
-        Commands::Gc { repository } => cmd_gc(&repository).await,
+        } => copy(&client, &source, &destination, recursive, jobs).await,
+        Commands::Ls {
+            repository,
+            recursive,
+            json,
+        } => ls(&client, &repository, recursive, json).await,
+        Commands::Gc {
+            repository,
+            recursive,
+        } => gc(&client, &repository, recursive).await,
     }
 }
 
-/// Parse a platform string like "linux/amd64" into a Platform.
-fn parse_platform(s: &str) -> Result<Platform> {
-    let parts: Vec<&str> = s.split('/').collect();
-    match parts.as_slice() {
-        [os, arch] => Ok(Platform::new(arch.to_string(), os.to_string())),
-        [os, arch, variant] => {
-            let mut p = Platform::new(arch.to_string(), os.to_string());
-            p.variant = Some(variant.to_string());
-            Ok(p)
+fn parse(s: &str) -> Result<Reference> {
+    s.parse()
+        .with_context(|| format!("parsing reference {:?}", s))
+}
+
+/// `registry/repository` of a reference.
+fn repo_name(r: &Reference) -> String {
+    format!("{}/{}", r.registry(), r.repository())
+}
+
+/// Lists `repo` and, when `recursive`, every child repository
+/// (go `google.Walk`), depth first.
+///
+/// Registries without GCR's extensions report no children; there the
+/// repositories under `root` are found through the catalog instead.
+async fn walk(client: &Client, root: &str, recursive: bool) -> Result<Vec<(String, GoogleTags)>> {
+    let root_ref = parse(root)?;
+    let root_tags = match client.google_list(&root_ref).await {
+        Ok(t) => Some(t),
+        // With recursion the root itself need not be a repository.
+        Err(e) if recursive && e.status_code() == Some(404) => None,
+        Err(e) => return Err(e).with_context(|| format!("listing {}", root)),
+    };
+    let has_extensions = root_tags
+        .as_ref()
+        .is_some_and(|t| !t.child.is_empty() || !t.manifest.is_empty());
+    if recursive && !has_extensions {
+        let prefix = format!("{}/", root_ref.repository());
+        let mut out: Vec<(String, GoogleTags)> = root_tags
+            .map(|t| (root.to_string(), t))
+            .into_iter()
+            .collect();
+        for repo in client.catalog(root_ref.registry()).await? {
+            if repo.starts_with(&prefix) {
+                let name = format!("{}/{}", root_ref.registry(), repo);
+                let tags = client.google_list(&parse(&name)?).await?;
+                out.push((name, tags));
+            }
         }
-        _ => anyhow::bail!(
-            "invalid platform format: {}, expected os/arch or os/arch/variant",
-            s
-        ),
+        return Ok(out);
     }
+
+    let mut out = Vec::new();
+    let mut stack = vec![root.to_string()];
+    while let Some(repo) = stack.pop() {
+        let tags = match (&root_tags, repo == root) {
+            (Some(t), true) => t.clone(),
+            _ => client
+                .google_list(&parse(&repo)?)
+                .await
+                .with_context(|| format!("listing {}", repo))?,
+        };
+        if recursive {
+            for child in tags.child.iter().rev() {
+                stack.push(format!("{}/{}", repo, child));
+            }
+        }
+        out.push((repo, tags));
+    }
+    Ok(out)
 }
 
-/// Find a matching platform in an index.
-fn find_platform_in_index<'a>(
-    index: &'a ImageIndex,
-    platform: &Platform,
-) -> Option<&'a containerregistry_image::Descriptor> {
-    index.manifests().iter().find(|m| {
-        m.platform.as_ref().is_some_and(|p| {
-            p.os == platform.os
-                && p.architecture == platform.architecture
-                && (platform.variant.is_none() || p.variant == platform.variant)
-        })
-    })
+fn print_images(repo: &str, tags: &GoogleTags, json: bool) -> Result<()> {
+    if json {
+        println!("{}", serde_json::to_string(tags)?);
+        return Ok(());
+    }
+    for (digest, info) in &tags.manifest {
+        println!("{}@{}", repo, digest);
+        for t in &info.tag {
+            println!("{}:{}", repo, t);
+        }
+    }
+    Ok(())
 }
 
-/// Copy images with GCR optimizations.
-async fn cmd_cp(
+async fn ls(client: &Client, repository: &str, recursive: bool, json: bool) -> Result<()> {
+    let repo = repo_name(&parse(repository)?);
+    if recursive {
+        for (r, tags) in walk(client, &repo, true).await? {
+            print_images(&r, &tags, json)?;
+        }
+        return Ok(());
+    }
+    let tags = client.google_list(&parse(&repo)?).await?;
+    if !json {
+        if tags.manifest.is_empty() && tags.child.is_empty() {
+            // No GCR extensions: list the tags like a normal registry.
+            for t in &tags.tags {
+                println!("{}:{}", repo, t);
+            }
+            return Ok(());
+        }
+        for child in &tags.child {
+            println!("{}/{}", repo, child);
+        }
+    }
+    print_images(&repo, &tags, json)
+}
+
+async fn gc(client: &Client, repository: &str, recursive: bool) -> Result<()> {
+    let repo = repo_name(&parse(repository)?);
+    for (r, tags) in walk(client, &repo, recursive).await? {
+        for (digest, info) in &tags.manifest {
+            if info.tag.is_empty() {
+                println!("{}@{}", r, digest);
+            }
+        }
+    }
+    Ok(())
+}
+
+/// One manifest to copy and the tags to apply to it.
+struct Job {
+    src: Reference,
+    dst: Reference,
+    tags: Vec<String>,
+}
+
+async fn copy(
     client: &Client,
     source: &str,
     destination: &str,
     recursive: bool,
     jobs: usize,
-    platform: Option<&Platform>,
 ) -> Result<()> {
-    let src_ref: Reference = source.parse().context("invalid source reference")?;
-    let dst_ref: Reference = destination
-        .parse()
-        .context("invalid destination reference")?;
-
-    if recursive {
-        // Copy all tags from source repository to destination
-        copy_repository(client, &src_ref, &dst_ref, jobs, platform).await
-    } else {
-        // Copy single image
-        copy_single_image(client, &src_ref, &dst_ref, platform).await
-    }
-}
-
-/// Copy all tags from a repository.
-async fn copy_repository(
-    client: &Client,
-    src_ref: &Reference,
-    dst_ref: &Reference,
-    jobs: usize,
-    platform: Option<&Platform>,
-) -> Result<()> {
-    // List all tags in the source repository
-    let tags = client
-        .list_tags(src_ref)
-        .await
-        .context("failed to list source tags")?;
-
-    if tags.is_empty() {
-        eprintln!("No tags found in {}", src_ref);
+    let opts = Options::default().with_jobs(jobs);
+    if !recursive {
+        let (src, dst) = (parse(source)?, parse(destination)?);
+        let t = remote::get(client, &src).await?.taggable();
+        remote::push(client, &dst, &t, &opts).await?;
+        eprintln!("Copied {} -> {}", source, destination);
         return Ok(());
     }
 
-    eprintln!("Found {} tags to copy", tags.len());
-
-    // Copy tags with concurrency limit
-    let semaphore = std::sync::Arc::new(tokio::sync::Semaphore::new(jobs));
-    let mut handles = Vec::new();
-
-    for tag in tags {
-        let client = client.clone();
-        let src_ref = src_ref.clone().with_new_tag(tag.clone());
-        let dst_ref = dst_ref.clone().with_new_tag(tag.clone());
-        let semaphore = semaphore.clone();
-        let platform = platform.cloned();
-
-        let handle = tokio::spawn(async move {
-            let _permit = semaphore.acquire().await.unwrap();
-            let result = copy_single_image(&client, &src_ref, &dst_ref, platform.as_ref()).await;
-            (tag, result)
-        });
-
-        handles.push(handle);
-    }
-
-    // Collect results
-    let mut success_count = 0;
-    let mut error_count = 0;
-
-    for handle in handles {
-        match handle.await {
-            Ok((tag, Ok(()))) => {
-                eprintln!("  {} copied", tag);
-                success_count += 1;
+    let src_root = repo_name(&parse(source)?);
+    let dst_root = repo_name(&parse(destination)?);
+    let mut work = Vec::new();
+    for (repo, tags) in walk(client, &src_root, true).await? {
+        let suffix = &repo[src_root.len()..];
+        let dst_repo = format!("{}{}", dst_root, suffix);
+        if tags.manifest.is_empty() {
+            // A registry without GCR extensions: copy by tag.
+            for t in &tags.tags {
+                work.push(Job {
+                    src: parse(&format!("{}:{}", repo, t))?,
+                    dst: parse(&format!("{}:{}", dst_repo, t))?,
+                    tags: Vec::new(),
+                });
             }
-            Ok((tag, Err(e))) => {
-                eprintln!("  {} failed: {}", tag, e);
-                error_count += 1;
-            }
-            Err(e) => {
-                eprintln!("  task failed: {}", e);
-                error_count += 1;
-            }
+            continue;
+        }
+        let mut by_digest: BTreeMap<&String, Vec<String>> = BTreeMap::new();
+        for (d, info) in &tags.manifest {
+            by_digest.insert(d, info.tag.clone());
+        }
+        for (d, ts) in by_digest {
+            work.push(Job {
+                src: parse(&format!("{}@{}", repo, d))?,
+                dst: parse(&format!("{}@{}", dst_repo, d))?,
+                tags: ts,
+            });
         }
     }
-
-    eprintln!(
-        "Copied {}/{} tags ({} errors)",
-        success_count,
-        success_count + error_count,
-        error_count
-    );
-
-    if error_count > 0 {
-        anyhow::bail!("{} tags failed to copy", error_count);
-    }
-
-    Ok(())
-}
-
-/// Copy a single image.
-async fn copy_single_image(
-    client: &Client,
-    src_ref: &Reference,
-    dst_ref: &Reference,
-    platform: Option<&Platform>,
-) -> Result<()> {
-    let (manifest_or_index, _) = client
-        .get_manifest(src_ref)
-        .await
-        .context("failed to get source manifest")?;
-
-    match manifest_or_index {
-        ManifestOrIndex::Manifest(manifest) => {
-            copy_manifest(client, src_ref, dst_ref, &manifest).await?;
-        }
-        ManifestOrIndex::Index(index) => {
-            if let Some(platform) = platform {
-                // Copy only the specified platform
-                let matching = find_platform_in_index(&index, platform)
-                    .context("no matching platform in index")?;
-
-                let manifest_ref = src_ref.clone().with_new_digest(matching.digest.clone());
-                let (inner, _) = client
-                    .get_manifest(&manifest_ref)
+    eprintln!("Copying {} manifests", work.len());
+    let futs: Vec<_> = work
+        .into_iter()
+        .map(|job| {
+            let opts = opts.clone().with_jobs(1);
+            async move {
+                let t = remote::get(client, &job.src).await?.taggable();
+                remote::push(client, &job.dst, &t, &opts)
                     .await
-                    .context("failed to get platform manifest")?;
-
-                let manifest = inner
-                    .into_manifest()
-                    .context("expected manifest, got index")?;
-                copy_manifest(client, src_ref, dst_ref, &manifest).await?;
-            } else {
-                // Copy entire index with all manifests
-                copy_index(client, src_ref, dst_ref, &index).await?;
-            }
-        }
-    }
-
-    Ok(())
-}
-
-/// Copy a single manifest and its blobs.
-async fn copy_manifest(
-    client: &Client,
-    src_ref: &Reference,
-    dst_ref: &Reference,
-    manifest: &Manifest,
-) -> Result<()> {
-    // Copy config blob
-    let config_bytes = client
-        .get_blob(src_ref, &manifest.config().digest)
-        .await
-        .context("failed to get config")?;
-    client
-        .put_blob(dst_ref, &config_bytes)
-        .await
-        .context("failed to push config")?;
-
-    // Copy layer blobs
-    for layer in manifest.layers() {
-        let layer_bytes = client
-            .get_blob(src_ref, &layer.digest)
-            .await
-            .with_context(|| format!("failed to get layer {}", layer.digest))?;
-        client
-            .put_blob(dst_ref, &layer_bytes)
-            .await
-            .with_context(|| format!("failed to push layer {}", layer.digest))?;
-    }
-
-    // Push manifest
-    client
-        .put_manifest(dst_ref, manifest)
-        .await
-        .context("failed to push manifest")?;
-
-    Ok(())
-}
-
-/// Copy an entire index and all its manifests.
-fn copy_index<'a>(
-    client: &'a Client,
-    src_ref: &'a Reference,
-    dst_ref: &'a Reference,
-    index: &'a ImageIndex,
-) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<()>> + Send + 'a>> {
-    Box::pin(async move {
-        // Copy each manifest in the index
-        for manifest_desc in index.manifests() {
-            let manifest_ref = src_ref
-                .clone()
-                .with_new_digest(manifest_desc.digest.clone());
-            let (inner, _) = client
-                .get_manifest(&manifest_ref)
-                .await
-                .with_context(|| format!("failed to get manifest {}", manifest_desc.digest))?;
-
-            match inner {
-                ManifestOrIndex::Manifest(m) => {
-                    copy_manifest(client, src_ref, dst_ref, &m).await?;
+                    .with_context(|| format!("copying {} to {}", job.src, job.dst))?;
+                for tag in &job.tags {
+                    client.tag(&job.dst, tag).await?;
                 }
-                ManifestOrIndex::Index(nested_index) => {
-                    copy_index(client, src_ref, dst_ref, &nested_index).await?;
-                }
+                eprintln!("Copied {} -> {}", job.src, job.dst);
+                Ok::<_, anyhow::Error>(())
             }
-        }
-
-        // Push the index itself
-        client
-            .put_index(dst_ref, index)
-            .await
-            .context("failed to push index")?;
-
-        Ok(())
-    })
-}
-
-/// List all tags in a repository.
-async fn cmd_ls(client: &Client, repository: &str) -> Result<()> {
-    let reference: Reference = repository.parse().context("invalid repository reference")?;
-
-    let tags = client
-        .list_tags(&reference)
-        .await
-        .context("failed to list tags")?;
-
-    for tag in tags {
-        println!("{}", tag);
-    }
-
+        })
+        .collect();
+    futures::stream::iter(futs)
+        .buffer_unordered(jobs.max(1))
+        .try_collect::<Vec<_>>()
+        .await?;
     Ok(())
-}
-
-/// Garbage collect unreferenced blobs.
-async fn cmd_gc(repository: &str) -> Result<()> {
-    anyhow::bail!("gc not yet implemented for repository {}", repository);
 }

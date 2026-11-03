@@ -7,6 +7,10 @@ license.workspace = true
 authors.workspace = true
 repository.workspace = true
 
+[lib]
+name = "containerregistry_crane"
+path = "src/lib.rs"
+
 [[bin]]
 name = "crane"
 path = "src/main.rs"
@@ -16,6 +20,14 @@ containerregistry-image.workspace = true
 containerregistry-layout.workspace = true
 containerregistry-registry.workspace = true
 containerregistry-auth.workspace = true
+containerregistry-v1.workspace = true
+containerregistry-server.workspace = true
+async-trait.workspace = true
+futures.workspace = true
+tokio-util.workspace = true
+tar.workspace = true
+serde_json.workspace = true
+tempfile.workspace = true
 clap.workspace = true
 tokio.workspace = true
 anyhow.workspace = true
@@ -23,5 +35,3 @@ tracing.workspace = true
 tracing-subscriber.workspace = true
 
 [dev-dependencies]
-tempfile.workspace = true
-serde_json.workspace = true
