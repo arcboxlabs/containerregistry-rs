@@ -7,6 +7,7 @@ members = [
     "crates/registry",
     "crates/auth",
     "crates/testing",
+    "crates/server",
     "bins/crane",
     "bins/gcrane",
 ]
@@ -40,6 +41,7 @@ containerregistry-layout = { version = "0.1.2", path = "crates/layout" }
 containerregistry-registry = { version = "0.1.2", path = "crates/registry" }
 containerregistry-auth = { version = "0.1.2", path = "crates/auth" }
 containerregistry-testing = { version = "0.1.2", path = "crates/testing" }
+containerregistry-server = { version = "0.1.2", path = "crates/server" }
 
 # Serialization
 serde = { version = "1", features = ["derive"] }
@@ -75,6 +77,9 @@ bytes = "1"
 futures = "0.3"
 tokio-util = { version = "0.7", features = ["io", "io-util"] }
 async-trait = "0.1"
+
+# HTTP server (registry)
+axum = "0.8"
 
 # Testing
 tempfile = "3"

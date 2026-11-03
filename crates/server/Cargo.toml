@@ -1,0 +1,26 @@
+[package]
+name = "containerregistry-server"
+description = "In-memory and disk-backed OCI distribution registry (go-containerregistry pkg/registry)"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+
+[dependencies]
+containerregistry-image.workspace = true
+axum.workspace = true
+tokio.workspace = true
+tokio-util.workspace = true
+futures.workspace = true
+bytes.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+sha2.workspace = true
+hex.workspace = true
+thiserror.workspace = true
+tracing.workspace = true
+
+[dev-dependencies]
+containerregistry-registry = { path = "../registry" }
+tempfile.workspace = true
