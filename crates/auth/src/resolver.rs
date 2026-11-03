@@ -29,12 +29,11 @@ impl AuthResolver {
     ///
     /// Loads the config from `DOCKER_CONFIG` or `~/.docker/config.json`.
     /// If the config doesn't exist, uses an empty config.
+    ///
+    /// When no Docker config is found, Podman's `auth.json` locations are
+    /// consulted (see [`crate::default_keychain`]).
     pub fn new() -> Self {
-        let config = DockerConfig::load().ok();
-        Self {
-            config,
-            explicit: None,
-        }
+        crate::default_keychain()
     }
 
     /// Creates a new resolver with a specific Docker config.
@@ -51,6 +50,11 @@ impl AuthResolver {
             config: None,
             explicit: Some(Credential::Anonymous),
         }
+    }
+
+    /// Returns the loaded Docker config, if any.
+    pub fn config(&self) -> Option<&DockerConfig> {
+        self.config.as_ref()
     }
 
     /// Sets explicit credentials that override all other sources.

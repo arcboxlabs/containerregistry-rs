@@ -104,6 +104,78 @@ impl CredentialHelper {
         Ok(response.into_credential())
     }
 
+    /// Runs the helper with `action`, writing `input` to stdin, and returns
+    /// stdout.
+    fn run(&self, action: &str, input: &[u8]) -> Result<Vec<u8>> {
+        let binary = self.binary_name();
+        let mut child = Command::new(&binary)
+            .arg(action)
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .map_err(|e| {
+                if e.kind() == std::io::ErrorKind::NotFound {
+                    Error::HelperNotFound(binary.clone())
+                } else {
+                    Error::HelperFailure(format!("failed to spawn {}: {}", binary, e))
+                }
+            })?;
+        if let Some(mut stdin) = child.stdin.take() {
+            stdin.write_all(input).map_err(|e| {
+                Error::HelperFailure(format!("failed to write to {}: {}", binary, e))
+            })?;
+        }
+        let output = child
+            .wait_with_output()
+            .map_err(|e| Error::HelperFailure(format!("failed to read from {}: {}", binary, e)))?;
+        if !output.status.success() {
+            return Err(Error::HelperFailure(format!(
+                "{} {} exited with status {}: {}{}",
+                binary,
+                action,
+                output.status,
+                String::from_utf8_lossy(&output.stderr).trim(),
+                String::from_utf8_lossy(&output.stdout).trim()
+            )));
+        }
+        Ok(output.stdout)
+    }
+
+    /// Stores a credential for `server_url` (the helper `store` action).
+    pub fn store(&self, server_url: &str, credential: &Credential) -> Result<()> {
+        let (username, secret) = match credential {
+            Credential::Basic { username, password } => (username.as_str(), password.as_str()),
+            // Docker stores identity tokens with the magic username "<token>".
+            Credential::IdentityToken(t) | Credential::Bearer(t) => ("<token>", t.as_str()),
+            Credential::Anonymous => {
+                return Err(Error::InvalidCredentials(
+                    "cannot store anonymous credentials".to_string(),
+                ));
+            }
+        };
+        let payload = serde_json::json!({
+            "ServerURL": server_url,
+            "Username": username,
+            "Secret": secret,
+        });
+        self.run("store", &serde_json::to_vec(&payload)?)?;
+        Ok(())
+    }
+
+    /// Erases the credential for `server_url` (the helper `erase` action).
+    pub fn erase(&self, server_url: &str) -> Result<()> {
+        self.run("erase", format!("{}\n", server_url).as_bytes())?;
+        Ok(())
+    }
+
+    /// Lists stored server URLs and their usernames (the helper `list`
+    /// action).
+    pub fn list(&self) -> Result<std::collections::HashMap<String, String>> {
+        let out = self.run("list", b"")?;
+        Ok(serde_json::from_slice(&out)?)
+    }
+
     /// Checks if the helper binary exists and is executable.
     pub fn is_available(&self) -> bool {
         let binary = self.binary_name();

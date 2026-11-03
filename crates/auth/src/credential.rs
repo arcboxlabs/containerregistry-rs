@@ -101,6 +101,10 @@ impl HelperCredential {
     /// Converts this helper credential to a Credential.
     pub fn into_credential(self) -> Credential {
         match (self.username, self.secret) {
+            // Docker's convention for identity tokens stored in helpers.
+            (Some(username), Some(secret)) if username == "<token>" && !secret.is_empty() => {
+                Credential::identity_token(secret)
+            }
             (Some(username), Some(secret)) if !username.is_empty() => {
                 Credential::basic(username, secret)
             }

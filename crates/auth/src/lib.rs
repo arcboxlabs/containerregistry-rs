@@ -41,12 +41,14 @@ mod config;
 mod credential;
 mod error;
 mod helper;
+mod keychain;
 mod resolver;
 
-pub use config::{AuthEntry, DockerConfig};
+pub use config::{AuthEntry, DOCKER_HUB_AUTH_KEY, DockerConfig};
 pub use credential::{Credential, HelperCredential};
 pub use error::Error;
-pub use helper::CredentialHelper;
+pub use helper::{CredentialHelper, normalize_server_url};
+pub use keychain::{HelperKeychain, Keychain, MultiKeychain, default_keychain};
 pub use resolver::AuthResolver;
 
 /// Result type for auth operations.
