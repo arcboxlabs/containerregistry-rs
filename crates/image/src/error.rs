@@ -33,6 +33,10 @@ pub enum Error {
     #[error("invalid config: {0}")]
     InvalidConfig(String),
 
+    /// Invalid platform specification.
+    #[error("invalid platform: {0}")]
+    InvalidPlatform(String),
+
     /// JSON serialization/deserialization error.
     #[error("json error: {0}")]
     Json(#[from] serde_json::Error),

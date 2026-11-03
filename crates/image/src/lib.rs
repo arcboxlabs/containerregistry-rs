@@ -34,7 +34,7 @@ mod media_type;
 
 pub use config::{ContainerConfig, EmptyObject, Healthcheck, History, ImageConfig, RootFs};
 pub use descriptor::{Descriptor, Platform};
-pub use digest::{Algorithm, Digest};
+pub use digest::{Algorithm, Digest, Hasher};
 pub use error::Error;
 pub use index::{DockerManifestList, ImageIndex, OciIndex};
 pub use manifest::{DockerManifest, Manifest, OciManifest};

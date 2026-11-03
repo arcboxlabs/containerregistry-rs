@@ -52,7 +52,9 @@ pub struct DockerManifest {
     /// Schema version (must be 2).
     pub schema_version: u32,
 
-    /// Media type of the manifest.
+    /// Media type of the manifest (defaults to the Docker manifest type when
+    /// absent, as older registries omit it).
+    #[serde(default = "docker_manifest_media_type")]
     pub media_type: MediaType,
 
     /// Reference to the image config blob.
@@ -60,6 +62,10 @@ pub struct DockerManifest {
 
     /// References to the layer blobs, in order from base to top.
     pub layers: Vec<Descriptor>,
+}
+
+fn docker_manifest_media_type() -> MediaType {
+    MediaType::DockerManifest
 }
 
 impl OciManifest {
@@ -116,8 +122,10 @@ impl OciManifest {
     /// This checks:
     /// - schemaVersion is 2
     /// - mediaType is present and is OCI manifest type
-    /// - config has a valid config media type
-    /// - layers have valid layer media types
+    /// - config has an OCI config media type or a custom (artifact) type
+    /// - layers have OCI layer media types or custom (artifact) types
+    ///
+    /// Docker media types are rejected inside an OCI manifest.
     pub fn validate(&self) -> Result<()> {
         if self.schema_version != OCI_MANIFEST_SCHEMA_VERSION {
             return Err(Error::InvalidManifest(format!(
@@ -143,9 +151,11 @@ impl OciManifest {
         }
 
         // Validate config media type (OCI-only)
+        // Arbitrary (`Other`) media types are allowed: OCI 1.1 artifacts such
+        // as Tart VM images use custom config and layer types.
         if !matches!(
             self.config.media_type,
-            MediaType::OciConfig | MediaType::OciEmptyJson
+            MediaType::OciConfig | MediaType::OciEmptyJson | MediaType::Other(_)
         ) {
             return Err(Error::InvalidManifest(format!(
                 "invalid config mediaType for OCI manifest: expected OCI config type, got {}",
@@ -163,6 +173,8 @@ impl OciManifest {
                     | MediaType::OciLayerNondistributable
                     | MediaType::OciLayerNondistributableGzip
                     | MediaType::OciLayerNondistributableZstd
+                    | MediaType::OciEmptyJson
+                    | MediaType::Other(_)
             ) {
                 return Err(Error::InvalidManifest(format!(
                     "invalid layer[{}] mediaType for OCI manifest: expected OCI layer type, got {}",
@@ -408,6 +420,67 @@ impl Manifest {
             None => Err(Error::InvalidManifest(
                 "missing mediaType field; cannot auto-detect manifest format".to_string(),
             )),
+        }
+    }
+
+    /// Parses a manifest without validating media types.
+    ///
+    /// The format is chosen from the document's `mediaType` field, falling
+    /// back to `media_type` (typically the HTTP `Content-Type`) and finally to
+    /// OCI. Use this for content received from registries, which may predate
+    /// the `mediaType` field or carry custom artifact types.
+    pub fn from_bytes_unchecked(data: &[u8], media_type: Option<&MediaType>) -> Result<Self> {
+        #[derive(Deserialize)]
+        struct Probe {
+            #[serde(default, rename = "mediaType")]
+            media_type: Option<MediaType>,
+        }
+        let probe: Probe = serde_json::from_slice(data)?;
+        match probe.media_type.as_ref().or(media_type) {
+            Some(MediaType::DockerManifest) => Ok(Manifest::Docker(
+                DockerManifest::from_bytes_unchecked(data)?,
+            )),
+            _ => Ok(Manifest::Oci(OciManifest::from_bytes_unchecked(data)?)),
+        }
+    }
+
+    /// Returns the subject descriptor (OCI 1.1), if any.
+    pub fn subject(&self) -> Option<&Descriptor> {
+        match self {
+            Manifest::Oci(m) => m.subject.as_ref(),
+            Manifest::Docker(_) => None,
+        }
+    }
+
+    /// Returns the artifact type (OCI 1.1), if any.
+    pub fn artifact_type(&self) -> Option<&MediaType> {
+        match self {
+            Manifest::Oci(m) => m.artifact_type.as_ref(),
+            Manifest::Docker(_) => None,
+        }
+    }
+
+    /// Returns the manifest annotations (empty for Docker manifests).
+    pub fn annotations(&self) -> Option<&BTreeMap<String, String>> {
+        match self {
+            Manifest::Oci(m) => Some(&m.annotations),
+            Manifest::Docker(_) => None,
+        }
+    }
+
+    /// Returns mutable access to the config descriptor.
+    pub fn config_mut(&mut self) -> &mut Descriptor {
+        match self {
+            Manifest::Oci(m) => &mut m.config,
+            Manifest::Docker(m) => &mut m.config,
+        }
+    }
+
+    /// Returns mutable access to the layer descriptors.
+    pub fn layers_mut(&mut self) -> &mut Vec<Descriptor> {
+        match self {
+            Manifest::Oci(m) => &mut m.layers,
+            Manifest::Docker(m) => &mut m.layers,
         }
     }
 

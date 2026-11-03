@@ -1,10 +1,12 @@
 //! OCI content descriptor type.
 
 use std::collections::BTreeMap;
+use std::fmt;
+use std::str::FromStr;
 
 use serde::{Deserialize, Serialize};
 
-use crate::{Digest, MediaType};
+use crate::{Digest, Error, MediaType};
 
 /// An OCI content descriptor.
 ///
@@ -37,6 +39,10 @@ pub struct Descriptor {
     /// Optional platform specification (used in index manifests).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub platform: Option<Platform>,
+
+    /// Optional artifact type of the referenced manifest (OCI 1.1).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub artifact_type: Option<MediaType>,
 }
 
 /// Platform specification for multi-arch images.
@@ -80,7 +86,19 @@ impl Descriptor {
             annotations: BTreeMap::new(),
             data: None,
             platform: None,
+            artifact_type: None,
         }
+    }
+
+    /// Creates a descriptor for `data`, computing its SHA-256 digest and size.
+    pub fn from_bytes(media_type: MediaType, data: &[u8]) -> Self {
+        Self::new(media_type, Digest::sha256(data), data.len() as u64)
+    }
+
+    /// Sets the artifact type (OCI 1.1).
+    pub fn with_artifact_type(mut self, artifact_type: MediaType) -> Self {
+        self.artifact_type = Some(artifact_type);
+        self
     }
 
     /// Adds an annotation to the descriptor.
@@ -137,6 +155,91 @@ impl Platform {
     pub fn with_feature(mut self, feature: impl Into<String>) -> Self {
         self.features.push(feature.into());
         self
+    }
+
+    /// Returns true if this platform satisfies `spec`.
+    ///
+    /// Empty fields in `spec` match anything; feature lists in `spec` must be
+    /// subsets of this platform's lists. This mirrors go-containerregistry's
+    /// `Platform.Satisfies`.
+    pub fn satisfies(&self, spec: &Platform) -> bool {
+        fn field(want: &str, have: &str) -> bool {
+            want.is_empty() || want == have
+        }
+        fn opt(want: &Option<String>, have: &Option<String>) -> bool {
+            field(want.as_deref().unwrap_or(""), have.as_deref().unwrap_or(""))
+        }
+        fn list(want: &[String], have: &[String]) -> bool {
+            want.iter().all(|w| have.contains(w))
+        }
+        field(&spec.os, &self.os)
+            && field(&spec.architecture, &self.architecture)
+            && opt(&spec.variant, &self.variant)
+            && opt(&spec.os_version, &self.os_version)
+            && list(&spec.os_features, &self.os_features)
+            && list(&spec.features, &self.features)
+    }
+
+    /// Returns true if both platforms are equal, ignoring feature order.
+    pub fn equals(&self, other: &Platform) -> bool {
+        fn sorted(v: &[String]) -> Vec<&String> {
+            let mut v: Vec<&String> = v.iter().collect();
+            v.sort();
+            v
+        }
+        self.os == other.os
+            && self.architecture == other.architecture
+            && self.variant.as_deref().unwrap_or("") == other.variant.as_deref().unwrap_or("")
+            && self.os_version.as_deref().unwrap_or("") == other.os_version.as_deref().unwrap_or("")
+            && sorted(&self.os_features) == sorted(&other.os_features)
+            && sorted(&self.features) == sorted(&other.features)
+    }
+}
+
+impl fmt::Display for Platform {
+    /// Formats as `os[/arch[/variant]][:osversion]`.
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        if self.os.is_empty() {
+            return Ok(());
+        }
+        f.write_str(&self.os)?;
+        if !self.architecture.is_empty() {
+            write!(f, "/{}", self.architecture)?;
+        }
+        if let Some(v) = self.variant.as_deref().filter(|v| !v.is_empty()) {
+            write!(f, "/{}", v)?;
+        }
+        if let Some(v) = self.os_version.as_deref().filter(|v| !v.is_empty()) {
+            write!(f, ":{}", v)?;
+        }
+        Ok(())
+    }
+}
+
+impl FromStr for Platform {
+    type Err = Error;
+
+    /// Parses `os[/arch[/variant]][:osversion]`, e.g. `linux/arm64/v8`.
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        let s = s.trim();
+        let (rest, os_version) = match s.split_once(':') {
+            Some((rest, v)) => (rest, Some(v.to_string())),
+            None => (s, None),
+        };
+        let parts: Vec<&str> = rest.split('/').collect();
+        if parts.len() > 3 {
+            return Err(Error::InvalidPlatform(format!(
+                "too many slashes in platform spec: {}",
+                s
+            )));
+        }
+        let mut p = Platform::new(
+            parts.get(1).copied().unwrap_or(""),
+            parts.first().copied().unwrap_or(""),
+        );
+        p.variant = parts.get(2).map(|v| v.to_string());
+        p.os_version = os_version;
+        Ok(p)
     }
 }
 

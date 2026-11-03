@@ -107,6 +107,88 @@ impl Digest {
     }
 }
 
+/// An incremental digest computation.
+///
+/// Feed data with [`Hasher::update`] as it streams past and call
+/// [`Hasher::finalize`] at the end. The hasher is cheap to clone, which lets
+/// callers checkpoint the state at chunk boundaries (e.g. to resume an upload).
+#[derive(Clone)]
+pub enum Hasher {
+    Sha256(Sha256),
+    Sha384(Sha384),
+    Sha512(Sha512),
+}
+
+impl Hasher {
+    /// Creates a hasher for the given algorithm.
+    pub fn new(algorithm: Algorithm) -> Self {
+        match algorithm {
+            Algorithm::Sha256 => Hasher::Sha256(Sha256::new()),
+            Algorithm::Sha384 => Hasher::Sha384(Sha384::new()),
+            Algorithm::Sha512 => Hasher::Sha512(Sha512::new()),
+        }
+    }
+
+    /// Returns the algorithm of this hasher.
+    pub fn algorithm(&self) -> Algorithm {
+        match self {
+            Hasher::Sha256(_) => Algorithm::Sha256,
+            Hasher::Sha384(_) => Algorithm::Sha384,
+            Hasher::Sha512(_) => Algorithm::Sha512,
+        }
+    }
+
+    /// Feeds data into the hasher.
+    pub fn update(&mut self, data: &[u8]) {
+        match self {
+            Hasher::Sha256(h) => h.update(data),
+            Hasher::Sha384(h) => h.update(data),
+            Hasher::Sha512(h) => h.update(data),
+        }
+    }
+
+    /// Consumes the hasher and returns the digest.
+    pub fn finalize(self) -> Digest {
+        let (algorithm, hex) = match self {
+            Hasher::Sha256(h) => (Algorithm::Sha256, hex::encode(h.finalize())),
+            Hasher::Sha384(h) => (Algorithm::Sha384, hex::encode(h.finalize())),
+            Hasher::Sha512(h) => (Algorithm::Sha512, hex::encode(h.finalize())),
+        };
+        Digest { algorithm, hex }
+    }
+}
+
+impl fmt::Debug for Hasher {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "Hasher({})", self.algorithm())
+    }
+}
+
+impl std::io::Write for Hasher {
+    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+        self.update(buf);
+        Ok(buf.len())
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        Ok(())
+    }
+}
+
+impl Digest {
+    /// Computes the digest of everything readable from `reader`.
+    ///
+    /// Returns the digest and the number of bytes read.
+    pub fn from_reader(
+        algorithm: Algorithm,
+        mut reader: impl std::io::Read,
+    ) -> std::io::Result<(Self, u64)> {
+        let mut hasher = Hasher::new(algorithm);
+        let n = std::io::copy(&mut reader, &mut hasher)?;
+        Ok((hasher.finalize(), n))
+    }
+}
+
 impl fmt::Display for Digest {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         let alg = match self.algorithm {
@@ -243,6 +325,20 @@ mod tests {
         assert_eq!(digest_upper, digest_lower);
         assert_eq!(digest_upper.hex(), digest_lower.hex());
         assert_eq!(digest_upper.to_string(), lower);
+    }
+
+    #[test]
+    fn test_hasher_matches_one_shot() {
+        for alg in [Algorithm::Sha256, Algorithm::Sha384, Algorithm::Sha512] {
+            let mut h = Hasher::new(alg);
+            h.update(b"hello ");
+            let checkpoint = h.clone();
+            h.update(b"world");
+            assert_eq!(h.finalize(), Digest::compute(alg, b"hello world"));
+            let mut resumed = checkpoint;
+            resumed.update(b"there");
+            assert_eq!(resumed.finalize(), Digest::compute(alg, b"hello there"));
+        }
     }
 
     #[test]

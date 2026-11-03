@@ -48,11 +48,17 @@ pub struct DockerManifestList {
     /// Schema version (must be 2).
     pub schema_version: u32,
 
-    /// Media type of the manifest list.
+    /// Media type of the manifest list (defaults to the Docker manifest list
+    /// type when absent).
+    #[serde(default = "docker_manifest_list_media_type")]
     pub media_type: MediaType,
 
     /// References to platform-specific manifests.
     pub manifests: Vec<Descriptor>,
+}
+
+fn docker_manifest_list_media_type() -> MediaType {
+    MediaType::DockerManifestList
 }
 
 impl OciIndex {
@@ -133,7 +139,12 @@ impl OciIndex {
 
         // Validate manifest descriptor media types
         for (i, manifest) in self.manifests.iter().enumerate() {
-            if !manifest.media_type.is_manifest() && !manifest.media_type.is_index() {
+            // Unknown (`Other`) types are allowed: the image spec requires
+            // implementations to ignore descriptors they do not understand.
+            if !manifest.media_type.is_manifest()
+                && !manifest.media_type.is_index()
+                && !matches!(manifest.media_type, MediaType::Other(_))
+            {
                 return Err(Error::InvalidManifest(format!(
                     "invalid manifests[{}] mediaType: expected manifest or index type, got {}",
                     i, manifest.media_type
@@ -404,6 +415,50 @@ impl ImageIndex {
             None => Err(Error::InvalidManifest(
                 "missing mediaType field; cannot auto-detect index format".to_string(),
             )),
+        }
+    }
+
+    /// Parses an index without validating media types.
+    ///
+    /// The format is chosen from the document's `mediaType` field, falling
+    /// back to `media_type` (typically the HTTP `Content-Type`) and finally to
+    /// OCI.
+    pub fn from_bytes_unchecked(data: &[u8], media_type: Option<&MediaType>) -> Result<Self> {
+        #[derive(Deserialize)]
+        struct Probe {
+            #[serde(default, rename = "mediaType")]
+            media_type: Option<MediaType>,
+        }
+        let probe: Probe = serde_json::from_slice(data)?;
+        match probe.media_type.as_ref().or(media_type) {
+            Some(MediaType::DockerManifestList) => Ok(ImageIndex::Docker(
+                DockerManifestList::from_bytes_unchecked(data)?,
+            )),
+            _ => Ok(ImageIndex::Oci(OciIndex::from_bytes_unchecked(data)?)),
+        }
+    }
+
+    /// Returns mutable access to the manifest descriptors.
+    pub fn manifests_mut(&mut self) -> &mut Vec<Descriptor> {
+        match self {
+            ImageIndex::Oci(i) => &mut i.manifests,
+            ImageIndex::Docker(i) => &mut i.manifests,
+        }
+    }
+
+    /// Returns the index annotations (empty for Docker manifest lists).
+    pub fn annotations(&self) -> Option<&BTreeMap<String, String>> {
+        match self {
+            ImageIndex::Oci(i) => Some(&i.annotations),
+            ImageIndex::Docker(_) => None,
+        }
+    }
+
+    /// Returns the subject descriptor (OCI 1.1), if any.
+    pub fn subject(&self) -> Option<&Descriptor> {
+        match self {
+            ImageIndex::Oci(i) => i.subject.as_ref(),
+            ImageIndex::Docker(_) => None,
         }
     }
 

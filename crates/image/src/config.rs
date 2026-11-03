@@ -30,7 +30,12 @@ pub struct ImageConfig {
     pub os: String,
 
     /// Optional OS version.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(
+        default,
+        rename = "os.version",
+        alias = "os_version",
+        skip_serializing_if = "Option::is_none"
+    )]
     pub os_version: Option<String>,
 
     /// Optional OS features required by the image.
@@ -68,6 +73,19 @@ pub struct ImageConfig {
     /// Author of the image.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub author: Option<String>,
+
+    /// ID of the container used to build the image (Docker).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub container: Option<String>,
+
+    /// Docker version used to build the image (Docker).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub docker_version: Option<String>,
+
+    /// Fields not modelled above (e.g. `container_config`), preserved so that
+    /// a parse/serialize round trip does not drop data.
+    #[serde(flatten, default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub extra: BTreeMap<String, serde_json::Value>,
 }
 
 /// Empty object used for ports and volumes.
@@ -190,6 +208,11 @@ pub struct ContainerConfig {
     /// Windows-specific: whether args should be escaped.
     #[serde(default, skip_serializing_if = "is_false")]
     pub args_escaped: bool,
+
+    /// Fields not modelled above (e.g. `Tty`, `Image`), preserved so that a
+    /// parse/serialize round trip does not drop data.
+    #[serde(flatten, default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub extra: BTreeMap<String, serde_json::Value>,
 }
 /// Root filesystem configuration.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -247,6 +270,9 @@ impl ImageConfig {
             history: Vec::new(),
             created: None,
             author: None,
+            container: None,
+            docker_version: None,
+            extra: BTreeMap::new(),
         }
     }
 
