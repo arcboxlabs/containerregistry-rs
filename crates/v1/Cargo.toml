@@ -1,0 +1,27 @@
+[package]
+name = "containerregistry-v1"
+description = "Image, index and layer abstractions with mutate, tarball, empty, random, partial, stream and validate (go-containerregistry pkg/v1)"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+
+[dependencies]
+containerregistry-image.workspace = true
+async-trait.workspace = true
+async-compression.workspace = true
+tokio.workspace = true
+tokio-util.workspace = true
+futures.workspace = true
+bytes.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+tar.workspace = true
+flate2.workspace = true
+rand.workspace = true
+base64.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true

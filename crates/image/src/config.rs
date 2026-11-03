@@ -24,9 +24,11 @@ where
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ImageConfig {
     /// The CPU architecture.
+    #[serde(default)]
     pub architecture: String,
 
     /// The operating system.
+    #[serde(default)]
     pub os: String,
 
     /// Optional OS version.
@@ -56,6 +58,7 @@ pub struct ImageConfig {
     pub config: Option<ContainerConfig>,
 
     /// Layer content hashes (uncompressed).
+    #[serde(default)]
     pub rootfs: RootFs,
 
     /// Build history.
@@ -218,10 +221,11 @@ pub struct ContainerConfig {
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RootFs {
     /// Type of rootfs (always "layers").
-    #[serde(rename = "type")]
+    #[serde(rename = "type", default)]
     pub fs_type: String,
 
     /// Layer diff IDs (uncompressed content hashes).
+    #[serde(default, deserialize_with = "null_as_default")]
     pub diff_ids: Vec<Digest>,
 }
 

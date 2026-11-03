@@ -3,6 +3,7 @@ resolver = "2"
 members = [
     ".",
     "crates/image",
+    "crates/v1",
     "crates/layout",
     "crates/registry",
     "crates/auth",
@@ -37,6 +38,7 @@ repository = "https://github.com/arcbox-labs/containerregistry-rs"
 [workspace.dependencies]
 # Workspace crates
 containerregistry-image = { version = "0.1.2", path = "crates/image" }
+containerregistry-v1 = { version = "0.1.2", path = "crates/v1" }
 containerregistry-layout = { version = "0.1.2", path = "crates/layout" }
 containerregistry-registry = { version = "0.1.2", path = "crates/registry" }
 containerregistry-auth = { version = "0.1.2", path = "crates/auth" }
@@ -77,6 +79,9 @@ bytes = "1"
 futures = "0.3"
 tokio-util = { version = "0.7", features = ["io", "io-util"] }
 async-trait = "0.1"
+async-compression = { version = "0.4", features = ["tokio", "gzip", "zstd"] }
+tar = "0.4"
+rand = "0.9"
 
 # HTTP server (registry)
 axum = "0.8"
