@@ -278,6 +278,8 @@ dependencies = [
  "containerregistry-image",
  "containerregistry-layout",
  "containerregistry-registry",
+ "containerregistry-server",
+ "containerregistry-v1",
 ]
 
 [[package]]

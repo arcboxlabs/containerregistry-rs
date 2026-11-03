@@ -24,9 +24,15 @@ repository.workspace = true
 
 [dependencies]
 containerregistry-image.workspace = true
+containerregistry-v1.workspace = true
 containerregistry-layout.workspace = true
 containerregistry-registry.workspace = true
 containerregistry-auth.workspace = true
+containerregistry-server = { workspace = true, optional = true }
+
+[features]
+# The in-process registry (go-containerregistry pkg/registry); pulls in axum.
+server = ["dep:containerregistry-server"]
 
 [workspace.package]
 version = "0.1.2"

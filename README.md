@@ -10,6 +10,10 @@ A Rust implementation of [go-containerregistry](https://github.com/google/go-con
 - **Auth** — Docker config (`~/.docker/config.json`), credential helpers, bearer token negotiation, and basic auth
 - **Digest verification** — SHA-256/384/512 content verification on all downloads
 - **Retry & resilience** — Exponential backoff with `Retry-After` support, automatic bearer token refresh on 401
+- **Streaming blobs** — Uploads and downloads stream through `AsyncRead` and hash on the fly, so multi-gigabyte blobs never sit in memory
+- **Resumable & parallel transfers** — `Range` reads, auto-resuming downloads, parallel ranged downloads to files, chunked uploads that resume from the registry's offset (also across processes), concurrent layer transfers and cross-repo mounts
+- **Image model** — `Image` / `ImageIndex` / `Layer` traits with `mutate`, `tarball` (incl. legacy `docker save`), `empty`, `random`, `partial`, `stream`, `validate`, `cache` and matchers, backed by registries, OCI layouts and tarballs
+- **Registry server** — An in-memory or disk-backed OCI registry that passes the distribution-spec conformance suite (`crane registry serve`)
 
 ## Crates
 
@@ -17,11 +21,13 @@ A Rust implementation of [go-containerregistry](https://github.com/google/go-con
 |---------|------|-------------|
 | `containerregistry` | `.` | Facade crate re-exporting all library crates |
 | `containerregistry-image` | `crates/image` | Core types: `Manifest`, `ImageIndex`, `Descriptor`, `Digest`, `MediaType`, `Platform` |
-| `containerregistry-registry` | `crates/registry` | HTTP registry client, reference parsing, retry logic, metrics |
-| `containerregistry-auth` | `crates/auth` | Credential resolution: Docker config, credential helpers, bearer/basic auth |
-| `containerregistry-layout` | `crates/layout` | OCI image layout read/write |
-| `containerregistry-crane` | `bins/crane` | crane-compatible CLI (digest, manifest, pull, push, copy, ls) |
-| `containerregistry-gcrane` | `bins/gcrane` | gcrane-compatible CLI (cp, ls) |
+| `containerregistry-v1` | `crates/v1` | `Image`/`ImageIndex`/`Layer` traits, `mutate`, `tarball`, `empty`, `random`, `partial`, `stream`, `validate`, `cache` (go `pkg/v1`) |
+| `containerregistry-registry` | `crates/registry` | HTTP registry client, streaming/resumable/parallel blobs, `remote` images (go `pkg/v1/remote`) |
+| `containerregistry-auth` | `crates/auth` | Keychains, Docker config, credential helpers, bearer/basic auth (go `pkg/authn`) |
+| `containerregistry-layout` | `crates/layout` | OCI image layout read/write, layouts as v1 sources and sinks, gc (go `pkg/v1/layout`) |
+| `containerregistry-server` | `crates/server` | In-memory / disk-backed registry (go `pkg/registry`) |
+| `containerregistry-crane` | `bins/crane` | crane-compatible CLI with go crane's full command set |
+| `containerregistry-gcrane` | `bins/gcrane` | gcrane-compatible CLI (copy -r, ls -r/--json, gc, plus every crane command) |
 | `containerregistry-testing` | `crates/testing` | Test harness: fixtures, golden comparators, parity runner, fault injection |
 
 ## Quick Start
@@ -47,6 +53,34 @@ async fn main() -> anyhow::Result<()> {
 }
 ```
 
+Large blobs (e.g. VM disk layers) stream instead:
+
+```rust,ignore
+use containerregistry::registry::{DownloadOptions, UploadOptions};
+
+// Verified, auto-resuming stream (AsyncRead + AsyncBufRead)
+let mut reader = client.get_blob_stream(&reference, &digest).await?;
+// Byte range
+let part = client.get_blob_range(&reference, &digest, 0..1024).await?;
+// To a file: resumes `<dest>.partial`, 8 concurrent ranges
+client
+    .download_blob(&reference, &digest, dest, DownloadOptions::default().with_parallelism(8))
+    .await?;
+// Upload a file in 64 MiB chunks, resuming after failures
+client
+    .push_blob_file(&reference, path, UploadOptions::default().with_chunk_size(64 << 20))
+    .await?;
+```
+
+Whole images copy with concurrent, deduplicated, mount-aware layer transfers:
+
+```rust,ignore
+use containerregistry::registry::remote::{self, Options};
+
+let img = remote::image(&client, &src, &Options::default()).await?;
+remote::write(&client, &dst, img, &Options::default().with_jobs(8)).await?;
+```
+
 ### CLI
 
 ```bash
@@ -56,11 +90,17 @@ cargo build --release
 # Get image digest
 crane digest ghcr.io/my-org/my-image:latest
 
-# Pull to OCI layout
-crane pull --format oci --output ./image ghcr.io/my-org/my-image:latest
+# Pull to an OCI layout (or a docker tarball: --format tarball|legacy)
+crane pull --format oci ghcr.io/my-org/my-image:latest ./image
 
-# Push from OCI layout
-crane push ghcr.io/my-org/my-image:v2 ./image
+# Push from an OCI layout or tarball
+crane push ./image ghcr.io/my-org/my-image:v2
+
+# Mutate, flatten, rebase, export, index append/filter, edit, validate, ...
+crane mutate ghcr.io/my-org/my-image:v2 -l team=infra -t ghcr.io/my-org/my-image:v3
+
+# Run a local registry
+crane registry serve --address 127.0.0.1:5000
 
 # List tags
 crane ls ghcr.io/my-org/my-image
