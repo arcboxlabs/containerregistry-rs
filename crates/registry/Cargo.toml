@@ -17,6 +17,10 @@ serde_json.workspace = true
 thiserror.workspace = true
 tracing.workspace = true
 httpdate.workspace = true
+bytes.workspace = true
+futures.workspace = true
+tokio-util.workspace = true
 
 [dev-dependencies]
 tempfile.workspace = true
+serde_json.workspace = true

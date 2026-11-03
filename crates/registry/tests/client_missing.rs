@@ -195,7 +195,10 @@ async fn test_put_manifest_rate_limited_retry_after() {
 
     let (addr, handle) = serve_responses(vec![response]);
     let reference: Reference = format!("{}/repo:tag", addr).parse().unwrap();
-    let client = Client::with_config(ClientConfig::new().with_https(false)).unwrap();
+    // PUTs are retried on 429 like other requests; disable retries to
+    // observe the mapping of the final response.
+    let client =
+        Client::with_config(ClientConfig::new().with_https(false).with_retries(0)).unwrap();
     let manifest = minimal_manifest();
 
     let err = client

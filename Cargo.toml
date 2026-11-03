@@ -70,6 +70,12 @@ tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 # HTTP utilities
 httpdate = "1"
 
+# Async I/O and streams
+bytes = "1"
+futures = "0.3"
+tokio-util = { version = "0.7", features = ["io", "io-util"] }
+async-trait = "0.1"
+
 # Testing
 tempfile = "3"
 flate2 = "1"
