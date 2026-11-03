@@ -228,6 +228,15 @@ pub trait CompressedLayerCore: Send + Sync {
             self.size().await?,
         ))
     }
+    /// See [`Layer::mount_source`].
+    fn mount_source(&self) -> Option<crate::MountSource> {
+        None
+    }
+    /// See [`Layer::download_to`].
+    async fn download_to(&self, dest: &std::path::Path) -> Result<bool> {
+        let _ = dest;
+        Ok(false)
+    }
 }
 
 /// Extends a [`CompressedLayerCore`] into a [`Layer`], computing the diff ID
@@ -307,6 +316,14 @@ impl<C: CompressedLayerCore> Layer for CompressedLayer<C> {
 
     async fn descriptor(&self) -> Result<Descriptor> {
         self.core.descriptor().await
+    }
+
+    fn mount_source(&self) -> Option<crate::MountSource> {
+        self.core.mount_source()
+    }
+
+    async fn download_to(&self, dest: &std::path::Path) -> Result<bool> {
+        self.core.download_to(dest).await
     }
 }
 
@@ -568,5 +585,8 @@ impl Layer for Described {
     }
     fn local_path(&self) -> Option<std::path::PathBuf> {
         self.inner.local_path()
+    }
+    async fn download_to(&self, dest: &std::path::Path) -> Result<bool> {
+        self.inner.download_to(dest).await
     }
 }

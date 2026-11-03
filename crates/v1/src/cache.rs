@@ -256,6 +256,9 @@ impl Layer for LazyLayer {
     fn mount_source(&self) -> Option<crate::MountSource> {
         self.inner.mount_source()
     }
+    fn local_path(&self) -> Option<PathBuf> {
+        None
+    }
 }
 
 struct CachedImage {

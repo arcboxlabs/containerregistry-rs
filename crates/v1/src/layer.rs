@@ -1,6 +1,6 @@
 //! The [`Layer`] trait (go-containerregistry `v1.Layer`).
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::pin::Pin;
 use std::sync::Arc;
 
@@ -75,6 +75,15 @@ pub trait Layer: Send + Sync {
     fn local_path(&self) -> Option<PathBuf> {
         None
     }
+
+    /// Writes the compressed content to `dest` using a transfer the source
+    /// optimizes (remote layers use resumable, parallel range downloads).
+    /// Returns `false` when the layer has no such path; callers then copy
+    /// [`Layer::compressed`] themselves.
+    async fn download_to(&self, dest: &Path) -> Result<bool> {
+        let _ = dest;
+        Ok(false)
+    }
 }
 
 #[async_trait]
@@ -108,6 +117,9 @@ impl<L: Layer + ?Sized> Layer for Arc<L> {
     }
     fn local_path(&self) -> Option<PathBuf> {
         (**self).local_path()
+    }
+    async fn download_to(&self, dest: &Path) -> Result<bool> {
+        (**self).download_to(dest).await
     }
 }
 

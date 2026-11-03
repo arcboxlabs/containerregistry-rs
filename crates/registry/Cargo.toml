@@ -10,6 +10,9 @@ repository.workspace = true
 [dependencies]
 containerregistry-image.workspace = true
 containerregistry-auth.workspace = true
+containerregistry-v1.workspace = true
+async-trait.workspace = true
+base64.workspace = true
 reqwest.workspace = true
 tokio.workspace = true
 serde.workspace = true
@@ -22,5 +25,7 @@ futures.workspace = true
 tokio-util.workspace = true
 
 [dev-dependencies]
+# Path-only: the server dev-depends on this crate (no publish cycle).
+containerregistry-server = { path = "../server" }
 tempfile.workspace = true
 serde_json.workspace = true

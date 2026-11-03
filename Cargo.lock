@@ -352,9 +352,13 @@ dependencies = [
 name = "containerregistry-registry"
 version = "0.1.2"
 dependencies = [
+ "async-trait",
+ "base64",
  "bytes",
  "containerregistry-auth",
  "containerregistry-image",
+ "containerregistry-server",
+ "containerregistry-v1",
  "futures",
  "httpdate",
  "reqwest",

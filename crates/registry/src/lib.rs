@@ -42,6 +42,7 @@ mod manifests;
 pub mod metrics;
 mod progress;
 mod reference;
+pub mod remote;
 mod upload;
 
 pub use blobs::{BlobReader, DownloadOptions, error_from_io};
