@@ -35,7 +35,7 @@ containerregistry-server = { workspace = true, optional = true }
 server = ["dep:containerregistry-server"]
 
 [workspace.package]
-version = "0.1.2"
+version = "0.2.0"
 edition = "2024"
 license = "MIT OR Apache-2.0"
 authors = ["ArcBox Labs <oss@arcbox.dev>", "AprilNEA <dev@aprilnea.me>"]
@@ -43,13 +43,13 @@ repository = "https://github.com/arcbox-labs/containerregistry-rs"
 
 [workspace.dependencies]
 # Workspace crates
-containerregistry-image = { version = "0.1.2", path = "crates/image" }
-containerregistry-v1 = { version = "0.1.2", path = "crates/v1" }
-containerregistry-layout = { version = "0.1.2", path = "crates/layout" }
-containerregistry-registry = { version = "0.1.2", path = "crates/registry" }
-containerregistry-auth = { version = "0.1.2", path = "crates/auth" }
-containerregistry-testing = { version = "0.1.2", path = "crates/testing" }
-containerregistry-server = { version = "0.1.2", path = "crates/server" }
+containerregistry-image = { version = "0.2.0", path = "crates/image" }
+containerregistry-v1 = { version = "0.2.0", path = "crates/v1" }
+containerregistry-layout = { version = "0.2.0", path = "crates/layout" }
+containerregistry-registry = { version = "0.2.0", path = "crates/registry" }
+containerregistry-auth = { version = "0.2.0", path = "crates/auth" }
+containerregistry-testing = { version = "0.2.0", path = "crates/testing" }
+containerregistry-server = { version = "0.2.0", path = "crates/server" }
 
 # Serialization
 serde = { version = "1", features = ["derive"] }
